@@ -6,6 +6,7 @@ import { EditHistory } from './edit-history';
 import { registerEditorEvents } from './editor';
 import { Events } from './events';
 import { initFileHandler } from './file-handler';
+import { runPreload } from './preload';
 import { registerHotspotsEvents } from './hotspots';
 import { registerPlySequenceEvents } from './ply-sequence';
 import { registerPublishEvents } from './publish';
@@ -257,6 +258,8 @@ const main = async () => {
     registerHotspotsEvents(events);
     initShortcuts(events);
     initFileHandler(scene, events, editorUI.appContainer.dom, remoteStorageDetails);
+    // 自动预加载（如果有查询参数注入）
+    runPreload(events).catch(err => console.error('preload error', err));
 
     // load async models
     scene.start();

@@ -7,6 +7,7 @@ from typing import List, Optional
 import gradio as gr
 import requests
 
+
 BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 
 
@@ -59,16 +60,12 @@ with gr.Blocks(title="3DGS Online") as demo:
                 value="files",
                 info="支持：多图片 / 整个文件夹 / zip 压缩包 (只含图片)",
             )
-            # 合并为一个容器：根据类型变化，复用同一个 Files 控件
-            # 说明：gradio 目前不支持在运行时切换 file_count 参数，因此我们使用两个 Files 控件并通过 visible 切换；
-            # 但在视觉上它们呈现为一个“上传区域”。
             files_multi = gr.Files(label="上传区：多图片 / 文件夹 / zip", type="filepath", height=260, visible=True, file_count="multiple")
             folder_picker = gr.Files(label="上传区：选择一个文件夹", type="filepath", height=260, visible=False, file_count="directory")
             zip_picker = gr.File(label="上传区：选择一个zip", type="filepath", height=120, visible=False, file_types=[".zip"]) 
             files = gr.State([])
 
             def _toggle(uptype):
-                # 切换可见性
                 return (
                     gr.update(visible=uptype == "files"),
                     gr.update(visible=uptype == "folder"),
@@ -77,7 +74,6 @@ with gr.Blocks(title="3DGS Online") as demo:
 
             upload_type.change(_toggle, inputs=upload_type, outputs=[files_multi, folder_picker, zip_picker])
 
-            # 同步文件值
             def _sync(uptype, multi, folder, zipf):
                 if uptype == "zip":
                     return [zipf] if zipf else []
@@ -90,29 +86,26 @@ with gr.Blocks(title="3DGS Online") as demo:
             folder_picker.change(lambda v: v, inputs=folder_picker, outputs=files)
             zip_picker.change(lambda v: [v] if v else [], inputs=zip_picker, outputs=files)
 
-            scene_name = gr.Textbox(label="场景名称（可选，如北京大学生命楼）", placeholder="beijdxshengmingloy")
+            scene_name = gr.Textbox(label="场景名称（可选，如北京大学生命楼）", placeholder="scene_01", lines=1)
             btn = gr.Button("重建", variant="primary")
 
-            # 进度条与阶段文本
             stage_markdown = gr.Markdown("等待提交…")
             with gr.Row():
                 with gr.Column(scale=2):
                     with gr.Tab("训练进度"):
-                        # 固定高度与行数，避免溢出；由 Textbox 内部滚动
                         log_view = gr.Textbox(label="实时日志", lines=22, max_lines=2000, interactive=False, value="(空)")
                         out_md = gr.Markdown()
                     with gr.Tab("训练结果"):
-                        # 仅以 Markdown 列表展示四个链接，避免把 URL 误传给 File 组件
-                        result_list = gr.Markdown("尚未完成")
+                        result_list = gr.Markdown("尚未完成", elem_id="result_list")
+                        view_btn = gr.Button("浏览", visible=False)
+                        job_state = gr.State("")
 
     def run_stream(files, scene_name, upload_type):
         md, job_id, log_url, status_url, _ = submit_job(files, scene_name, upload_type)
-        # 初始状态（结果为空，日志提示）
-        yield md, "任务已提交，日志实时输出中…", "(初始化中)", "尚未完成"
+        yield md, "任务已提交，日志实时输出中…", "(初始化中)", "尚未完成", gr.update(visible=False), (job_id or "")
         if not job_id:
-            yield md + "\n无法解析任务ID。", "失败", "(失败)", "失败"
+            yield md + "\n无法解析任务ID。", "失败", "(失败)", "失败", gr.update(visible=False), ""
             return
-        # 轮询结果接口直到完成
         while True:
             try:
                 r = requests.get(status_url, timeout=3)
@@ -120,8 +113,6 @@ with gr.Blocks(title="3DGS Online") as demo:
             except Exception:
                 js = {"stage": "unknown"}
             stage = js.get("stage")
-            # 拉取日志末尾内容
-            # 逐行递增：拉取全量，再在前端持久化最后已读行数，按差量追加
             if not hasattr(run_stream, "_log_pos"):
                 run_stream._log_pos = 0
                 run_stream._log_cache = []
@@ -132,7 +123,6 @@ with gr.Blocks(title="3DGS Online") as demo:
                     new_lines = all_lines[run_stream._log_pos :]
                     run_stream._log_pos = len(all_lines)
                     run_stream._log_cache.extend(new_lines)
-                    # 限制缓存大小，避免内存增长
                     if len(run_stream._log_cache) > 2000:
                         run_stream._log_cache = run_stream._log_cache[-2000:]
                     log_text = "\n".join(run_stream._log_cache[-400:])
@@ -157,21 +147,37 @@ with gr.Blocks(title="3DGS Online") as demo:
                     f"3. cameras.json: {BACKEND_URL}{cameras_url}" if cameras_url else "3. cameras.json: (未找到)",
                     f"4. {job_id}.log: {log_url}",
                 ])
-                yield final_md, "完成", log_text, result_md
+                yield final_md, "完成", log_text, result_md, gr.update(visible=True), job_id
                 break
-            # 中间状态持续输出简单阶段说明
-            yield md, f"进行中…阶段: {stage}" if stage else "进行中…", log_text, "尚未完成"
+            yield md, (f"进行中…阶段: {stage}" if stage else "进行中…"), log_text, "尚未完成", gr.update(visible=False), job_id
             time.sleep(2)
 
     btn.click(
         fn=run_stream,
         inputs=[files, scene_name, upload_type],
-        outputs=[out_md, stage_markdown, log_view, result_list],
+        outputs=[out_md, stage_markdown, log_view, result_list, view_btn, job_state],
         queue=True,
     )
 
+    # 从独立 JS 文件加载 view_btn 的前端逻辑，并注入 BACKEND_URL 常量
+    js_path = os.path.join(os.path.dirname(__file__), 'static/js/view_btn.js')
+    try:
+        with open(js_path, 'r', encoding='utf-8') as f:
+            js_template = f.read()
+        js_code = js_template.replace('${BACKEND_URL}', BACKEND_URL)
+    except Exception:
+        # 兜底：若文件读取失败，保持按钮不可见，避免运行期错误
+        js_code = '(job)=>{ alert("前端脚本缺失，无法打开编辑器"); }'
+
+    view_btn.click(
+        fn=None,
+        inputs=job_state,
+        outputs=[],
+        js=js_code,
+    )
+
+
 if __name__ == "__main__":
-    # 选择可用端口：优先 FRONTEND_PORT，否则自动探测空闲端口（避免使用0/None的兼容性问题）
     import socket
 
     def _find_free_port(host: str, preferred: Optional[int]) -> int:

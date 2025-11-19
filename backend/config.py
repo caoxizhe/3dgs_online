@@ -18,6 +18,7 @@ GAUSSIAN_SPLATTING_DIR: Path = Path(
 ).resolve()
 COLMAP_BIN: str = os.getenv("COLMAP_BIN", "colmap")  # in PATH or absolute
 PYTHON_EXE: str = os.getenv("PYTHON_EXE", sys.executable)
+GS_EDITOR_URL: str = os.getenv("GS_EDITOR_URL", "/gs_editor/dist/index.html")
 
 # Optional: one-shot script to run COLMAP+3DGS. Placeholders:
 #   {images} {work} {out} {gs} {py} {colmap}

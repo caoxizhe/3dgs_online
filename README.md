@@ -131,13 +131,44 @@ python frontend/app.py
 
 5. 输出与文件位置
 
-上传图片：3dgs_online/data/uploads/<job-id>/input/
+上传图片：3dgs_online/data/uploads/job-id/input/
 
-工作目录：3dgs_online/data/uploads/<job-id>
+工作目录：3dgs_online/data/uploads/job-id
 
-结果目录：3dgs_online/data/outputs/<job-id>/
+结果目录：3dgs_online/data/outputs/job-id/
 
-压缩包：3dgs_online/data/outputs/<job-id>.zip
+压缩包：3dgs_online/data/outputs/job-id.zip
 
-日志：3dgs_online/data/logs/<job-id>.log
+日志：3dgs_online/data/logs/job-id.log
+
+6. 浏览与自动加载 (gs_editor 集成)
+
+训练完成后结果区会出现“浏览 (gs_editor)”按钮与一个跳转链接。点击后会打开 gs_editor，并自动加载：
+- 点云: point_cloud.ply (迭代30000)
+- 相机: cameras.json
+- 原始图片: /uploads/<job-id>/input 下探测到的若干图片
+
+实现机制：
+- 后端新增 /viewer/{job_id} 接口返回编辑器跳转 URL，包含 ply / cameras / images 查询参数。
+- 前端在任务完成后请求该接口，将链接追加到结果 Markdown 中。
+- gs_editor 在 index.html 中解析查询参数，将其写入 window.__GS_PRELOAD__。
+- 运行时在 main.ts 中调用 runPreload(events) 自动触发加载（PLY 与 cameras 通过现有 import 事件）。
+
+环境变量：
+- GS_EDITOR_URL 设置编辑器基础路径（默认 /gs_editor/dist/index.html）。
+
+注意：图片当前仅做存在性探测与日志输出，若需要贴图或缩略图展示，可在 preload.ts 中扩展实际加载逻辑。
+
+6. 浏览结果（gs_editor 集成）
+
+训练完成后可点击“浏览 (gs_editor)” 按钮跳转内置编辑器，自动尝试加载：
+- point_cloud.ply （迭代30000生成）
+- cameras.json （相机参数）
+- 原始图片目录 /uploads/<job-id>/input/
+
+配置：
+- 后端环境变量 `GS_EDITOR_URL` 可覆盖编辑器入口（默认 /gs_editor/dist/index.html）。
+- 若你部署 gs_editor 为独立域名，设置该变量为完整 URL。
+
+注意：当前 editor 自动加载逻辑为初步实现（在 dist/index.html 中解析 URL 查询参数并将其写入 window.__GS_PRELOAD__，可在 index.js 中扩展实际加载函数）。
 

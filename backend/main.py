@@ -5,38 +5,68 @@ from pathlib import Path
 from typing import List, Optional
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import APIRouter
 import threading
 import json
 import time
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from pathlib import Path as _Path
+
 from . import config as C
 from . import reconstruction as R
 from .utils import make_job_id, save_upload_files, zip_dir, extract_zip
 
-app = FastAPI(title="3DGS Online Reconstructor", version="0.1.1")
+app = FastAPI(title="3DGS Online Reconstructor", version="0.1.2")
 
 # 简单的内存任务状态映射（非持久化）
 JOBS: dict[str, dict] = {}
 
 # CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"] if C.ALLOWED_ORIGINS == ["*"] else C.ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if C.ALLOWED_ORIGINS == ["*"]:
+    # 当允许任意来源且需要携带凭据时，使用 allow_origin_regex 来回显 Origin
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=".*",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=C.ALLOWED_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # Static mounts for outputs and logs
 app.mount("/outputs", StaticFiles(directory=str(C.OUTPUT_DIR)), name="outputs")
 app.mount("/logs", StaticFiles(directory=str(C.LOG_DIR)), name="logs")
+app.mount("/uploads", StaticFiles(directory=str(C.UPLOAD_DIR)), name="uploads")
+# Serve gs_editor (built assets) so前端可直接访问
+
+_gs_dist = _Path(C.BASE_DIR) / "gs_editor" / "dist"
+if _gs_dist.exists():
+    app.mount("/gs_editor/dist", StaticFiles(directory=str(_gs_dist)), name="gs_editor")
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "gs_dir": str(C.GAUSSIAN_SPLATTING_DIR)}
+    """Simple health and environment check."""
+    return {
+        "status": "ok",
+        "gs_dir": str(C.GAUSSIAN_SPLATTING_DIR),
+        "outputs_dir": str(C.OUTPUT_DIR),
+        "uploads_dir": str(C.UPLOAD_DIR),
+        "logs_dir": str(C.LOG_DIR),
+        "gs_editor_url": C.GS_EDITOR_URL,
+        "gs_editor_dist_path": str(_gs_dist),
+        "gs_editor_mounted": bool(_gs_dist.exists()),
+        "gs_editor_index_exists": bool((_gs_dist / "index.html").exists()) if _gs_dist.exists() else False,
+    }
 
 
 @app.get("/status/{job_id}")
@@ -145,6 +175,68 @@ def _find_cameras(out_dir: Path) -> str | None:
     if target.exists():
         return f"/outputs/{out_dir.name}/" + str(target.relative_to(out_dir)).replace("\\", "/")
     return None
+
+
+@app.get("/viewer/{job_id}")
+def viewer(job_id: str):
+    """Return a ready-to-use gs_editor URL with query parameters for ply/cameras/images.
+    前端可以直接跳转该链接以在浏览器中加载对应数据。
+    """
+    out_dir = C.OUTPUT_DIR / job_id
+    upload_root = C.UPLOAD_DIR / job_id
+    if not out_dir.exists():
+        raise HTTPException(status_code=404, detail="job not found")
+    ply = _find_point_cloud(out_dir)
+    cams = _find_cameras(out_dir)
+    images_dir = upload_root / "input"
+    # 将图片目录暴露为 /uploads/<job_id>/input/ 相对路径
+    images_url = f"/uploads/{job_id}/input" if images_dir.exists() else None
+    base_editor = C.GS_EDITOR_URL
+    # 拼接查询参数（浏览器侧脚本解析）
+    import urllib.parse as _up
+    q = {
+        "ply": f"{ply}" if ply else "",
+        "cameras": f"{cams}" if cams else "",
+        "images": images_url or "",
+    }
+    query = _up.urlencode(q)
+    full_url = f"{base_editor}?{query}"
+
+    diagnostics = {
+        "outputs_dir": str(C.OUTPUT_DIR),
+        "uploads_dir": str(C.UPLOAD_DIR),
+        "job_out_dir": str(out_dir),
+        "job_upload_dir": str(upload_root),
+        "gs_editor_url": C.GS_EDITOR_URL,
+        "gs_editor_dist_path": str(_gs_dist),
+        "gs_editor_mounted": bool(_gs_dist.exists()),
+        "gs_editor_index_exists": bool((_gs_dist / "index.html").exists()) if _gs_dist.exists() else False,
+        "ply_exists": bool(ply),
+        "cameras_exists": bool(cams),
+        "images_dir_exists": images_dir.exists(),
+        "images_url": images_url,
+        "issues": [],
+        "warnings": [],
+    }
+    if not ply:
+        diagnostics["issues"].append("point_cloud.ply 未找到: 期望 outputs/<job_id>/point_cloud/iteration_30000/point_cloud.ply")
+    if not cams:
+        diagnostics["issues"].append("cameras.json 未找到: 期望 outputs/<job_id>/cameras.json")
+    if not images_dir.exists():
+        diagnostics["warnings"].append("原始图片目录缺失: uploads/<job_id>/input")
+    if not diagnostics["gs_editor_mounted"]:
+        diagnostics["issues"].append("gs_editor/dist 未挂载，无法打开内置查看器")
+    elif not diagnostics["gs_editor_index_exists"]:
+        diagnostics["issues"].append("gs_editor/dist/index.html 不存在")
+
+    return {
+        "job_id": job_id,
+        "ply_url": ply,
+        "cameras_url": cams,
+        "images_url": images_url,
+        "editor_url": full_url,
+        "diagnostics": diagnostics,
+    }
 
 
 def _async_reconstruct(job_id: str, scene: str, upload_type: str, img_dir: Path, work_dir: Path, out_dir: Path, log_file: Path):
