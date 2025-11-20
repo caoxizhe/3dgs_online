@@ -28,10 +28,6 @@ GS_EDITOR_URL: str = os.getenv("GS_EDITOR_URL", "/gs_editor/dist/index.html")
 #     {py} {gs}/train.py -s {work}/gs_data -m {out}'
 RECON_CMD_TEMPLATE: str | None = os.getenv("GS_RECON_CMD", None)
 
-# Viewer 产物路径（相对于 out_dir），可通过环境变量覆盖以适配不同引擎输出结构
-PLY_REL_PATH: str = os.getenv("PLY_REL_PATH", "point_cloud/iteration_30000/point_cloud.ply")
-CAMERAS_REL_PATH: str = os.getenv("CAMERAS_REL_PATH", "cameras.json")
-
 # Server
 HOST: str = os.getenv("HOST", "0.0.0.0")
 PORT: int = int(os.getenv("PORT", 8000))

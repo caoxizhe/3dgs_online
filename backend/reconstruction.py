@@ -41,12 +41,7 @@ def reconstruct(
     out_dir: Path,
     log_file: Path,
 ) -> Dict:
-     """Run reconstruction pipeline.
-
-     优先级：
-        1) 若设置了环境变量 GS_RECON_CMD（config.RECON_CMD_TEMPLATE），按模板执行一条完整流水线命令，
-            可适配 miniGauss/gsplat/其他分支；模板占位符：{images} {work} {out} {gs} {py} {colmap}
-        2) 否则，默认按 gaussian-splatting 的 convert.py + train.py 两步执行。
+    """Run gaussian-splatting pipeline using convert.py and train.py.
 
     Expected layout:
       images_dir -> .../data/uploads/<job-id>/images/
@@ -64,23 +59,6 @@ def reconstruct(
     # 写入初始状态
     status_path = out_dir / "status.json"
     write_status(status_path, {"stage": "init", "ts": str(Path().stat().st_mtime)})
-
-    # 自定义流水线：通过环境变量模板，将 images/work/out 注入
-    if C.RECON_CMD_TEMPLATE:
-        write_status(status_path, {"stage": "custom", "message": "Running custom pipeline", "progress": 0})
-        cmd = C.RECON_CMD_TEMPLATE.format(
-            images=str(input_dir), work=str(work_dir), out=str(out_dir), gs=str(C.GAUSSIAN_SPLATTING_DIR), py=C.PYTHON_EXE, colmap=C.COLMAP_BIN
-        )
-        code = _run(cmd, cwd=C.BASE_DIR, log_file=log_file, header="CUSTOM_PIPELINE")
-        write_status(status_path, {"stage": "done" if code == 0 else "custom_failed", "exit_code": code})
-        return {
-            "exit_code": code,
-            "stage": "custom" if code == 0 else "custom_failed",
-            "command": cmd,
-            "dataset_root": str(dataset_root),
-            "out_dir": str(out_dir),
-            "log_file": str(log_file),
-        }
 
     # Step 1: run convert.py
     # 新布局下，前端已上传到 dataset_root/input，因此无需创建链接

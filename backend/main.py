@@ -61,11 +61,10 @@ if _frontend_dir.exists():
 
     @app.get("/")
     def root_redirect():
-        """根路径重定向到前端首页（若存在）。
-        若不需要自动跳转，可移除此路由或改为返回健康检查。"""
+        """统一重定向到 /frontend/index.html 避免相对路径问题"""
         index_file = _frontend_dir / "index.html"
         if index_file.exists():
-            return FileResponse(index_file)
+            return RedirectResponse(url="/frontend/index.html")
         return RedirectResponse(url="/health")
 
 
@@ -178,18 +177,16 @@ async def reconstruct(
 
 
 def _find_point_cloud(out_dir: Path) -> str | None:
-    # 目标路径可配置：默认 point_cloud/iteration_30000/point_cloud.ply
-    rel = C.PLY_REL_PATH.strip("/\\")
-    target = out_dir / rel
+    # 固定目标路径: point_cloud/iteration_30000/point_cloud.ply
+    target = out_dir / "point_cloud" / "iteration_30000" / "point_cloud.ply"
     if target.exists():
         return f"/outputs/{out_dir.name}/" + str(target.relative_to(out_dir)).replace("\\", "/")
     return None
 
 
 def _find_cameras(out_dir: Path) -> str | None:
-    # 目标路径可配置：默认输出根目录 cameras.json
-    rel = C.CAMERAS_REL_PATH.strip("/\\")
-    target = out_dir / rel
+    # 固定目标路径: cameras.json 位于输出根目录
+    target = out_dir / "cameras.json"
     if target.exists():
         return f"/outputs/{out_dir.name}/" + str(target.relative_to(out_dir)).replace("\\", "/")
     return None
