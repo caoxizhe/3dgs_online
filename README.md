@@ -164,11 +164,71 @@ python -m backend.main
 - GS_EDITOR_URL：后端中设置编辑器基础路径（默认 `/gs_editor/dist/index.html`）。
 - BACKEND_URL：前端可通过 `localStorage` 或 `window.BACKEND_URL` 指定后端根 URL。
 
-5. 旧 Gradio 前端说明
 
-`frontend/app.py` 已弃用，仅保留回退参考；现行流程不再使用 Gradio Blocks 与队列机制。若需要回退，可重新运行：
+
+
+## 使用其他优化实现（如 miniGauss / gsplat 等）
+
+后端已支持通过环境变量覆盖默认流水线，你可以不使用本仓库自带的 `gaussian-splatting`，而是切换到优化过的实现（例如 miniGauss）。核心做法：
+
+1) 指定外部实现所在目录（作为“引擎根目录”）
+- 设置环境变量 `GAUSSIAN_SPLATTING_DIR` 指向你的实现根目录，例如 miniGauss 的代码根目录。
+
+2) 用一条可配置的命令模板替换默认的 convert+train 流程
+- 设置环境变量 `GS_RECON_CMD`（后端读取为 `config.RECON_CMD_TEMPLATE`）。
+- 该模板在运行时会使用以下占位符进行替换：
+	- `{images}`：原始输入图片目录（例如 …/data/uploads/<job>/input）
+	- `{work}`：工作目录（例如 …/data/uploads/<job>/work）
+	- `{out}`：输出目录（例如 …/data/outputs/<job>）
+	- `{gs}`：你设置的“引擎根目录”（即 `GAUSSIAN_SPLATTING_DIR`）
+	- `{py}`：Python 可执行文件（`config.PYTHON_EXE`）
+	- `{colmap}`：COLMAP 可执行名或绝对路径（`config.COLMAP_BIN`）
+
+3) 配置查看器需要的产物路径
+- 若你的实现输出的点云/相机文件路径与默认不一致，请设置：
+	- `PLY_REL_PATH`：相对于输出目录（`{out}`）的点云 .ply 路径；默认 `point_cloud/iteration_30000/point_cloud.ply`
+	- `CAMERAS_REL_PATH`：相对输出目录的相机参数（例如 `cameras.json`）；默认 `cameras.json`
+
+### 快速示例
+
+以下示例展示了如何在 shell 中临时切换为“自定义引擎”，并用一条命令完成数据准备与训练（请根据你的仓库实际脚本调整路径与参数）。
+
+示例 A：使用自带 convert，再调用外部实现的训练脚本
 ```bash
-python frontend/app.py
+export GAUSSIAN_SPLATTING_DIR=/abs/path/to/minigauss
+export GS_RECON_CMD='\
+	{py} {gs}/convert.py -s {work} \
+	&& {py} {gs}/train.py -s {work} -m {out} \
+'
+
+# 若产物结构不同，设置查看器路径（示例：miniGauss 输出到 out/point_cloud/point_cloud.ply 与 out/cameras.json）
+export PLY_REL_PATH="point_cloud/point_cloud.ply"
+export CAMERAS_REL_PATH="cameras.json"
+
+python -m backend.main
 ```
-并在 README 中恢复相关章节即可。
+
+示例 B：完全自定义一条流水线（包含 COLMAP 步骤）
+```bash
+export GAUSSIAN_SPLATTING_DIR=/abs/path/to/your-engine
+export GS_RECON_CMD='\
+	{colmap} feature_extractor --database_path {work}/colmap.db --image_path {images} && \
+	{colmap} exhaustive_matcher --database_path {work}/colmap.db && \
+	mkdir -p {work}/sparse && \
+	{colmap} mapper --database_path {work}/colmap.db --image_path {images} --output_path {work}/sparse && \
+	{py} {gs}/tools/colmap2nerf.py -i {images} -s {work}/sparse/0 -o {work}/dataset && \
+	{py} {gs}/train.py -s {work}/dataset -m {out} \
+'
+
+# 视你的引擎产物而定（若查看器读不到点云/相机，检查这两个路径）
+export PLY_REL_PATH="point_cloud/iteration_30000/point_cloud.ply"
+export CAMERAS_REL_PATH="cameras.json"
+
+python -m backend.main
+```
+
+提示：
+- 以上仅为示例模板，请根据外部实现的实际脚本与参数调整。
+- 若你的实现不产生 `cameras.json`，查看器仍可加载点云，但相机轨迹与自动播放会缺失。
+- 如需固定这些设置，可将环境变量写入启动脚本或进程管理器（systemd、supervisor、docker-compose 的 env）。
 

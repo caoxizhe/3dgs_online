@@ -178,16 +178,18 @@ async def reconstruct(
 
 
 def _find_point_cloud(out_dir: Path) -> str | None:
-    # 固定目标路径: point_cloud/iteration_30000/point_cloud.ply
-    target = out_dir / "point_cloud" / "iteration_30000" / "point_cloud.ply"
+    # 目标路径可配置：默认 point_cloud/iteration_30000/point_cloud.ply
+    rel = C.PLY_REL_PATH.strip("/\\")
+    target = out_dir / rel
     if target.exists():
         return f"/outputs/{out_dir.name}/" + str(target.relative_to(out_dir)).replace("\\", "/")
     return None
 
 
 def _find_cameras(out_dir: Path) -> str | None:
-    # 固定目标路径: cameras.json 位于输出根目录
-    target = out_dir / "cameras.json"
+    # 目标路径可配置：默认输出根目录 cameras.json
+    rel = C.CAMERAS_REL_PATH.strip("/\\")
+    target = out_dir / rel
     if target.exists():
         return f"/outputs/{out_dir.name}/" + str(target.relative_to(out_dir)).replace("\\", "/")
     return None
