@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>3DGS Online</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🌐</text></svg>" />
+  <style>
+    :root { --bg:#050505; --panel:#111; --border:#222; --accent:#3b82f6; --accent2:#8b5cf6; --text:#e5e7eb; --danger:#ef4444; --success:#10b981; font-family: system-ui, sans-serif; }
+    body { margin:0; background:var(--bg); color:var(--text); -webkit-font-smoothing:antialiased; }
+    h1,h2,h3 { margin:0; font-weight:600; }
+    a { color:var(--accent); text-decoration:none; }
+    button { cursor:pointer; font-family:inherit; }
+    .navbar { display:flex; align-items:center; justify-content:space-between; padding:12px 28px; position:sticky; top:0; backdrop-filter:blur(16px); background:rgba(0,0,0,.85); border-bottom:1px solid var(--border); z-index:50; }
+    .brand { display:flex; align-items:center; gap:10px; }
+    .brand-badge { width:42px; height:42px; display:flex; align-items:center; justify-content:center; background:linear-gradient(135deg,#2563eb,#8b5cf6); border-radius:14px; font-weight:700; font-size:20px; box-shadow:0 4px 12px -4px rgba(0,0,0,.5); }
+    .create-btn { display:flex; align-items:center; gap:6px; background:#fff; color:#000; padding:10px 18px; font-weight:600; border-radius:999px; border:none; transition:.18s; }
+    .create-btn:hover { background:#e5e5e5; }
+    .layout { max-width:1500px; margin:0 auto; padding:36px 30px 80px; }
+    .section-head { display:flex; align-items:flex-end; justify-content:space-between; padding-bottom:18px; border-bottom:1px solid var(--border); margin-bottom:40px; }
+    .status-chip { display:flex; align-items:center; gap:6px; padding:6px 12px; background:rgba(16,185,129,.12); color:var(--success); border:1px solid rgba(16,185,129,.25); font-size:12px; border-radius:10px; font-weight:600; }
+    .grid { display:grid; gap:26px; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); }
+    .card-new { border:2px dashed #333; border-radius:20px; min-height:260px; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#0d0d0d; color:#667; transition:.25s; }
+    .card-new:hover { border-color:#2563ebaa; color:#2563eb; background:#0d2236; }
+    .card { position:relative; border:1px solid #1d1d1d; border-radius:20px; overflow:hidden; min-height:260px; background:#111; display:flex; flex-direction:column; }
+    .card img { width:100%; height:160px; object-fit:cover; opacity:.85; transition:.4s; }
+    .card:hover img { opacity:1; transform:scale(1.02); }
+    .card-body { padding:14px 16px 16px; display:flex; flex-direction:column; gap:10px; flex:1; }
+    .badge-row { display:flex; gap:8px; align-items:center; }
+    .badge { font-size:11px; padding:4px 8px; border-radius:8px; font-weight:600; letter-spacing:.5px; display:flex; align-items:center; gap:4px; }
+    .badge-ok { background:rgba(16,185,129,.18); color:var(--success); border:1px solid rgba(16,185,129,.4); }
+    .badge-fail { background:rgba(239,68,68,.15); color:var(--danger); border:1px solid rgba(239,68,68,.45); }
+    .badge-run { background:rgba(59,130,246,.15); color:#3b82f6; border:1px solid rgba(59,130,246,.45); }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; }
+  .btn-sm { font-size:12px; padding:6px 10px; border-radius:8px; background:#1e293b; border:1px solid #334155; color:#e2e8f0; display:flex; align-items:center; gap:4px; line-height:1; }
+    .btn-sm:hover { background:#2b3b52; }
+    .danger { background:#442626; border-color:#7f1d1d; }
+    .danger:hover { background:#5a2f2f; }
+    .modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.78); backdrop-filter:blur(10px); display:flex; align-items:center; justify-content:center; z-index:200; }
+    .modal { background:#111; border:1px solid #1f2937; border-radius:22px; width:100%; max-width:520px; padding:28px 32px 34px; box-shadow:0 8px 32px -8px rgba(0,0,0,.6); }
+    .modal h2 { font-size:22px; margin-bottom:20px; }
+    .form-row { display:flex; flex-direction:column; gap:6px; margin-bottom:18px; }
+    .form-row label { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.8px; color:#64748b; }
+    input[type=text] { background:#0d1117; border:1px solid #1e293b; color:#e2e8f0; border-radius:12px; padding:10px 14px; font-size:14px; }
+    input[type=text]:focus { outline:2px solid #2563eb; }
+    .mode-switch { display:flex; gap:8px; margin-bottom:12px; }
+  .mode-switch button { flex:1; background:#111; border:1px solid transparent; color:#9ca3af; border-radius:12px; padding:12px 4px; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.8px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; transition:.25s; }
+  .mode-switch button .icon svg { width:20px; height:20px; margin-bottom:2px; }
+  .mode-switch button:hover { background:#1b1b1b; color:#d1d5db; }
+  .mode-switch button.active { background:#2563eb; color:#fff; border-color:#1d4ed8; box-shadow:0 0 0 3px rgba(37,99,235,.35); }
+    .drop-zone { border:2px dashed #374151; border-radius:16px; padding:38px 20px; text-align:center; transition:.3s; background:#0b1015; }
+    .drop-zone.drag { border-color:#2563eb; background:#0d2236; }
+    .foot-actions { margin-top:10px; display:flex; gap:12px; justify-content:flex-end; }
+    .primary { background:linear-gradient(90deg,#2563eb,#7c3aed); border:none; color:#fff; padding:12px 22px; font-size:14px; font-weight:600; border-radius:12px; display:flex; align-items:center; gap:8px; }
+    .primary:disabled { opacity:.4; cursor:not-allowed; }
+    .log-modal { position:fixed; inset:0; z-index:220; display:flex; align-items:center; justify-content:center; }
+    .log-panel { width:100%; max-width:960px; height:80vh; background:#0d0f11; border:1px solid #1f2937; border-radius:18px; display:flex; flex-direction:column; overflow:hidden; box-shadow:0 20px 40px -14px rgba(0,0,0,.6); }
+    .log-head { padding:14px 20px; border-bottom:1px solid #1e2530; display:flex; justify-content:space-between; align-items:center; background:#12161c; }
+    .log-body { flex:1; overflow:auto; padding:16px 20px; font-family:monospace; font-size:12px; line-height:1.4; }
+    .log-line { display:flex; gap:12px; padding:2px 6px; border-left:2px solid transparent; }
+    .log-line:hover { background:#1b2330; border-left-color:#2563eb; }
+  </style>
+</head>
+<body>
+  <header class="navbar">
+    <div class="brand">
+      <div class="brand-badge">GS</div>
+      <h1>3DGS Online</h1>
+    </div>
+  <button id="openCreate" class="create-btn"><span class="icon" data-icon="plus"></span>新建</button>
+  </header>
+  <main class="layout">
+    <div class="section-head">
+      <div>
+        <h2 style="font-size:34px;">我的重建任务</h2>
+        <p style="color:#64748b;margin-top:6px;">管理并查看 Gaussian Splatting 重建过程与结果。</p>
+      </div>
+      <div class="status-chip"><span style="width:8px;height:8px;border-radius:50%;background:#10b981;display:inline-block;box-shadow:0 0 0 4px rgba(16,185,129,.3);"></span>后端: ONLINE</div>
+    </div>
+    <div class="grid" id="projectsGrid">
+  <button class="card-new" id="newShortcut"><span class="icon" data-icon="plus" style="margin-bottom:4px;"></span>新任务</button>
+    </div>
+  </main>
+
+  <!-- Create Modal -->
+  <div id="createModal" class="modal-backdrop" style="display:none;">
+    <div class="modal">
+      <h2>新建重建任务</h2>
+      <div class="form-row"><label>场景名称</label><input id="sceneName" type="text" placeholder="例如: campus_east"/></div>
+      <div class="form-row"><label>上传模式</label>
+        <div class="mode-switch" id="modeSwitch">
+          <button data-mode="files" class="active"><span class="icon" data-icon="files"></span>Files</button>
+          <button data-mode="folder"><span class="icon" data-icon="folder"></span>Folder</button>
+          <button data-mode="zip"><span class="icon" data-icon="archive"></span>Zip</button>
+        </div>
+      </div>
+      <div class="form-row"><label>源数据</label>
+        <div id="dropZone" class="drop-zone">拖拽或点击选择文件
+          <input id="fileInput" type="file" multiple style="display:none;" />
+        </div>
+        <div id="fileInfo" style="font-size:12px;color:#94a3b8;margin-top:6px;"></div>
+      </div>
+      <div class="foot-actions">
+  <button id="cancelCreate" class="btn-sm danger"><span class="icon" data-icon="x"></span>取消</button>
+  <button id="startBtn" class="primary" disabled><span class="icon" data-icon="rocket"></span>开始重建</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Log Modal -->
+  <div id="logModal" class="log-modal" style="display:none;">
+    <div class="log-panel">
+      <div class="log-head">
+        <div style="font-weight:600;">日志: <span id="logTitle"></span></div>
+        <div style="display:flex; gap:10px;">
+          <button class="btn-sm danger" id="closeLog">关闭</button>
+        </div>
+      </div>
+      <div id="logBody" class="log-body"></div>
+    </div>
+  </div>
+
+  <script type="module" src="./static/js/main.js"></script>
+  <script>
+    // 简易图标系统（lucide 精简 path）
+    const ICONS = {
+  plus: 'M12 5v14m7-7H5',
+      x: 'M6 6l12 12M6 18L18 6',
+      rocket: 'M4 12c8-8 8-8 16 0-4 4-8 8-16 0zm8-2a2 2 0 1 0 0.001 3.999A2 2 0 0 0 12 10zM2 22c4-1 7-2 10-2s6 1 10 2l-4-6H6l-4 6z',
+      eye: 'M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12zm11 4a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',
+      log: 'M4 4h10l6 6v10a2 2 0 0 1-2 2H4zM14 4v6h6',
+      trash: 'M3 6h18M8 6l1 14h6l1-14M10 6V4h4v2',
+      zip: 'M7 2h10v20H7z M11 6h2m-2 4h2m-2 4h2',
+      download: 'M12 3v12m6-6-6 6-6-6M4 21h16'
+  ,files: 'M4 3h8l2 2h6v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2 4h12M6 10h12M6 14h8',
+  folder: 'M3 6h6l2 2h10v10a2 2 0 0 1-2 2H3z',
+  archive: 'M4 4h16v16H4zM8 4v4h8V4m-4 6v6m-2-2h4'
+    };
+    function injectIcons(root=document){
+      root.querySelectorAll('.icon[data-icon]').forEach(el=>{
+        const name = el.getAttribute('data-icon');
+        const path = ICONS[name];
+        if (!path) return;
+        el.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${path}"></path></svg>`;
+      });
+    }
+    injectIcons();
+    window.injectIcons = injectIcons;
+  </script>
+</body>
+</html>

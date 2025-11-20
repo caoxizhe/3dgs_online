@@ -117,29 +117,19 @@ class RightToolbar extends Container {
             options.class[visible ? 'add' : 'remove']('active');
         });
 
-        // 在导入首个PLY后禁用“显示/隐藏splats”按钮，防止用户手动切换
-        const disableShowHideIfNeeded = () => {
-            // 先关闭overlay状态，再禁用按钮
+        // 保持按钮可用，只在首次检测到有 splat 后关闭 overlay 激活态
+        const turnOffOverlayIfNeeded = () => {
             events.fire('camera.setOverlay', false);
-            if (showHideSplats.enabled) {
-                showHideSplats.enabled = false;
-            }
         };
-
-        // 初始化阶段：若场景中已存在splats（例如通过预加载导入），直接禁用
         try {
             const splats = events.invoke('scene.splats') as any[];
             if (Array.isArray(splats) && splats.length > 0) {
-                disableShowHideIfNeeded();
+                turnOffOverlayIfNeeded();
             }
-        } catch (e) {
-            // ignore if not ready yet
-        }
-
-        // 监听场景元素添加事件：一旦有splat被加入，禁用按钮
-    events.on('scene.elementAdded', (element: SceneElement) => {
+        } catch (e) { /* ignore */ }
+        events.on('scene.elementAdded', (element: SceneElement) => {
             if (element?.type === ElementType.splat) {
-                disableShowHideIfNeeded();
+                turnOffOverlayIfNeeded();
             }
         });
     }

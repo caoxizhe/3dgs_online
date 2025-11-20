@@ -11,6 +11,7 @@ import json
 import time
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 
 from pathlib import Path as _Path
 
@@ -22,6 +23,7 @@ app = FastAPI(title="3DGS Online Reconstructor", version="0.1.2")
 
 # 简单的内存任务状态映射（非持久化）
 JOBS: dict[str, dict] = {}
+JOB_CANCELLED: set[str] = set()
 
 # CORS
 if C.ALLOWED_ORIGINS == ["*"]:
@@ -51,6 +53,20 @@ app.mount("/uploads", StaticFiles(directory=str(C.UPLOAD_DIR)), name="uploads")
 _gs_dist = _Path(C.BASE_DIR) / "gs_editor" / "dist"
 if _gs_dist.exists():
     app.mount("/gs_editor/dist", StaticFiles(directory=str(_gs_dist)), name="gs_editor")
+
+# Mount new pure JS frontend (index.html + static assets)
+_frontend_dir = _Path(C.BASE_DIR) / "frontend"
+if _frontend_dir.exists():
+    app.mount("/frontend", StaticFiles(directory=str(_frontend_dir), html=True), name="frontend")
+
+    @app.get("/")
+    def root_redirect():
+        """根路径重定向到前端首页（若存在）。
+        若不需要自动跳转，可移除此路由或改为返回健康检查。"""
+        index_file = _frontend_dir / "index.html"
+        if index_file.exists():
+            return FileResponse(index_file)
+        return RedirectResponse(url="/health")
 
 
 @app.get("/health")
@@ -241,9 +257,18 @@ def viewer(job_id: str):
 
 
 def _async_reconstruct(job_id: str, scene: str, upload_type: str, img_dir: Path, work_dir: Path, out_dir: Path, log_file: Path):
-    JOBS[job_id] = {"stage": "running", "done": False, "log_url": f"/logs/{log_file.name}"}
+    # 保留 cover_url 以便后续轮询仍能看到封面
+    cover_url = JOBS.get(job_id, {}).get("cover_url")
+    JOBS[job_id] = {"stage": "running", "done": False, "log_url": f"/logs/{log_file.name}", "cover_url": cover_url}
+    if job_id in JOB_CANCELLED:
+        JOBS[job_id].update({"done": True, "exit_code": -1, "error": "cancelled"})
+        return
     try:
         result = R.reconstruct(images_dir=img_dir, work_dir=work_dir, out_dir=out_dir, log_file=log_file)
+        if job_id in JOB_CANCELLED:
+            # 若已取消则不再继续打包与查找PLY
+            JOBS[job_id].update({"done": True, "exit_code": -1, "error": "cancelled"})
+            return
         # After training, zip outputs
         zip_path = (out_dir.parent / f"{job_id}.zip")
         zip_path = zip_dir(out_dir, zip_path)
@@ -301,12 +326,22 @@ async def reconstruct_stream(
     th = threading.Thread(target=_async_reconstruct, args=(job_id, scene, upload_type, img_dir, work_dir, out_dir, log_file), daemon=True)
     th.start()
 
+    # 计算封面图（第一张上传图）
+    cover_url = None
+    if saved:
+        # 静态服务路径 /uploads/<job_id>/input/<filename>
+        cover_url = f"/uploads/{job_id}/input/{saved[0].name}"
+    # 初始化 JOBS 项方便前端立即获取封面
+    base = JOBS.get(job_id, {})
+    JOBS[job_id] = {**base, "cover_url": cover_url, "stage": "running", "done": False, "log_url": f"/logs/{log_file.name}"}
+
     return {
         "job_id": job_id,
         "scene": scene,
         "upload_type": upload_type,
         "log_url": f"/logs/{log_file.name}",
         "status_url": f"/result/{job_id}",
+        "cover_url": cover_url,
     }
 
 
@@ -316,6 +351,36 @@ def result(job_id: str):
     if not data:
         return {"error": "job not found"}
     return data
+
+@app.delete("/delete/{job_id}")
+def delete_job(job_id: str):
+    """删除/取消任务：
+    - 标记任务为取消
+    - 删除 uploads / outputs / log 文件
+    - 从 JOBS 中移除（或返回最后状态）
+    注：若重建线程已在执行，无法强制中断，只能标记取消。
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="job not found")
+    JOB_CANCELLED.add(job_id)
+    entry = JOBS[job_id]
+    entry.update({"done": True, "error": "cancelled"})
+    # 物理删除目录与日志
+    try:
+        up = C.UPLOAD_DIR / job_id
+        out = C.OUTPUT_DIR / job_id
+        logf = C.LOG_DIR / f"{job_id}.log"
+        def _rm(p: Path):
+            if p.exists():
+                if p.is_file():
+                    p.unlink(missing_ok=True)
+                else:
+                    import shutil; shutil.rmtree(p, ignore_errors=True)
+        _rm(up); _rm(out); _rm(logf)
+    except Exception as e:
+        entry.setdefault("warnings", []).append(f"cleanup_error: {e}")
+    # 可以选择保留 JOBS 条目一段时间，当前直接返回状态
+    return {"job_id": job_id, "status": "deleted", "cover_url": entry.get("cover_url")}
 
 
 if __name__ == "__main__":
@@ -337,5 +402,8 @@ if __name__ == "__main__":
             return s.getsockname()[1]
 
     port = _find_free_port(C.PORT)
-    print(f"[backend] Serving on http://{C.HOST}:{port}")
+    frontend_hint = ''
+    if _frontend_dir.exists():
+        frontend_hint = f"\n[frontend] Open: http://{C.HOST}:{port}/frontend/index.html"
+    print(f"[backend] Serving on http://{C.HOST}:{port}{frontend_hint}")
     uvicorn.run(app, host=C.HOST, port=port)
