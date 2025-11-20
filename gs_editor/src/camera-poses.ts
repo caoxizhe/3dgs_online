@@ -1549,6 +1549,166 @@ const registerCameraPosesEvents = (events: Events) => {
         document.body.removeChild(input);
     });
 
+    // 自动加载 cameras.json 内容（与 camera.loadKeys 逻辑类似，但直接接收数组）
+    events.on('camera.autoLoadCameras', (camerasData: any[]) => {
+        if (!Array.isArray(camerasData) || camerasData.length === 0) {
+            console.warn('[autoLoadCameras] invalid camerasData');
+            return;
+        }
+        const selectedSplat = events.invoke('selection') as Splat;
+        if (!selectedSplat) {
+            console.warn('[autoLoadCameras] no splat selected');
+            return;
+        }
+        // 复制 camera.loadKeys 里排序 + 选取 + 时间轴分配逻辑（简化：不重复 popup 提示）
+        const extractIdx = (name: string) => {
+            if (!name) return Number.MAX_SAFE_INTEGER;
+            const m = String(name).match(/(\d+)(?!.*\d)/);
+            return m ? parseInt(m[1], 10) : Number.MAX_SAFE_INTEGER;
+        };
+        let cameras: any[] = camerasData.slice();
+        const withNumeric = cameras.filter(c => Number.isFinite(extractIdx(c?.img_name || c?.name)) && extractIdx(c?.img_name || c?.name) !== Number.MAX_SAFE_INTEGER);
+        if (withNumeric.length > 0) {
+            cameras = cameras.slice().sort((a, b) => extractIdx(a?.img_name || a?.name) - extractIdx(b?.img_name || b?.name));
+        }
+        const total = cameras.length;
+        const maxCameras = 10;
+        let selectedCameras: any[] = [];
+        if (!events.invoke('camera.simplify.get')) selectedCameras = cameras;
+        else if (total <= maxCameras) selectedCameras = cameras; else {
+            const indices: number[] = [];
+            for (let i = 0; i < maxCameras; i++) {
+                const idx = Math.round(i * (total - 1) / (maxCameras - 1));
+                if (!indices.includes(idx)) indices.push(idx);
+            }
+            selectedCameras = indices.map(i => cameras[i]);
+        }
+        // 场景中心（全部相机）
+        const sceneCenter = new Vec3(0, 0, 0);
+        let validCount = 0;
+        cameras.forEach(c => { if (c.position && Array.isArray(c.position)) { sceneCenter.add(new Vec3(c.position)); validCount++; } });
+        if (validCount > 0) sceneCenter.mulScalar(1 / validCount);
+        // 时间轴帧分配
+        const minGap = 18;
+        const n = Math.max(1, selectedCameras.length);
+        const desiredSteps = Math.max(1, n - 1);
+        const baseFrames = Math.max(1, events.invoke('timeline.frames') || 1200);
+        const step = (n > 1) ? Math.max(minGap, Math.ceil((baseFrames - 1) / desiredSteps)) : 1;
+        const finalFrames = (n > 1) ? (step * desiredSteps + 1) : baseFrames;
+        events.fire('timeline.setFrames', finalFrames);
+        const frameForIndex = (i: number) => (n > 1) ? (i * step) : 0;
+        // 清空旧数据
+        splatPoses.set(selectedSplat, []);
+        frameImageNameMap.clear();
+        frameCameraIdMap.clear();
+        frameRawPosMap.clear();
+        frameRawRotMap.clear();
+        frameFxMap.clear();
+        frameFyMap.clear();
+        // 构建新 poses
+        const newPoses: Pose[] = [];
+        selectedCameras.forEach((cam: any, index: number) => {
+            if (!cam.position || !Array.isArray(cam.position) || cam.position.length !== 3) return;
+            const position = new Vec3(cam.position);
+            let outPosition = new Vec3(cam.position);
+            let outTarget: Vec3;
+            if (cam.target && Array.isArray(cam.target)) {
+                outTarget = new Vec3(cam.target);
+            } else if (cam.rotation) {
+                const z = rotationCol3(cam.rotation);
+                if (z) {
+                    const toCenter = sceneCenter.clone().sub(position);
+                    const dot = toCenter.dot(z);
+                    const targetFromRot = position.clone().add(z.clone().mulScalar(dot));
+                    outPosition = new Vec3(-position.x, -position.y, position.z);
+                    outTarget = new Vec3(-targetFromRot.x, -targetFromRot.y, targetFromRot.z);
+                } else {
+                    outTarget = sceneCenter.clone();
+                }
+            } else {
+                outTarget = sceneCenter.clone();
+            }
+            const frame = frameForIndex(index);
+            const imageName = cam.img_name || cam.name;
+            if (imageName) frameImageNameMap.set(frame, String(imageName));
+            const idText = Number.isFinite(cam.id) ? String(cam.id) : (cam.name ?? imageName ?? `#${index}`);
+            frameCameraIdMap.set(frame, idText);
+            if (cam.position && Array.isArray(cam.position) && cam.position.length === 3) {
+                frameRawPosMap.set(frame, [cam.position[0], cam.position[1], cam.position[2]]);
+            }
+            if (cam.rotation) {
+                let rot: number[] | null = null;
+                if (Array.isArray(cam.rotation) && cam.rotation.length === 3 && Array.isArray(cam.rotation[0])) {
+                    rot = [
+                        cam.rotation[0][0], cam.rotation[0][1], cam.rotation[0][2],
+                        cam.rotation[1][0], cam.rotation[1][1], cam.rotation[1][2],
+                        cam.rotation[2][0], cam.rotation[2][1], cam.rotation[2][2]
+                    ];
+                } else if (Array.isArray(cam.rotation) && cam.rotation.length === 9) {
+                    rot = cam.rotation.slice(0, 9);
+                }
+                frameRawRotMap.set(frame, rot);
+            } else {
+                frameRawRotMap.set(frame, null);
+            }
+            const intr = extractFxFyTop(cam);
+            if (Number.isFinite(intr.fx)) frameFxMap.set(frame, intr.fx as number);
+            if (Number.isFinite(intr.fy)) frameFyMap.set(frame, intr.fy as number);
+            newPoses.push({
+                name: cam.name || cam.img_name || `camera_${index}`,
+                frame,
+                position: outPosition,
+                target: outTarget
+            });
+        });
+        splatPoses.set(selectedSplat, newPoses);
+        rebuildSpline();
+        const framesForTimeline = newPoses.map(p => p.frame);
+        events.fire('timeline.setSplatKeys', selectedSplat, framesForTimeline);
+        events.fire('timeline.selectionChanged');
+        // 关键帧建立后自动按名称加载图片（若已存在 base 路径）
+        const base = (window as any).__GS_IMAGES_BASE__ as string | undefined;
+        if (base) {
+            events.fire('images.autoLoadFromBase', base);
+        }
+        console.log(`[autoLoadCameras] loaded ${newPoses.length} poses`);
+    });
+
+    // 自动图片加载：根据 frameImageNameMap + base 逐个构造 URL 并加载
+    events.on('images.autoLoadFromBase', (baseDir: string) => {
+        if (!baseDir) return;
+        if (frameImageNameMap.size === 0) {
+            console.warn('[images.autoLoadFromBase] no frameImageNameMap entries');
+            return;
+        }
+        const base = String(baseDir).replace(/\/$/, '');
+        frameImageMap.clear();
+        let count = 0;
+        const entries = Array.from(frameImageNameMap.entries());
+        entries.forEach(([frame, name]) => {
+            const raw = String(name);
+            const candidates = [raw, `${raw}.png`, `${raw}.jpg`, `${raw}.jpeg`, `${raw}.webp`];
+            let chosen: string | null = null;
+            for (const c of candidates) { chosen = c; break; }
+            if (!chosen) return;
+            const url = `${base}/${chosen}`;
+            const img = new Image();
+            img.onload = () => {
+                const arr = frameImageMap.get(frame) || [];
+                arr.push(img);
+                frameImageMap.set(frame, arr);
+                const cur = events.invoke('timeline.frame');
+                showImagesForFrame(cur);
+            };
+            img.onerror = () => { /* ignore */ };
+            img.src = url;
+            count++;
+        });
+        console.log(`[images.autoLoadFromBase] scheduled ${count} image loads from ${base}`);
+        const cur = events.invoke('timeline.frame');
+        showImagesForFrame(cur);
+    });
+
     // 独立的图片文件夹上传事件处理：匹配已记录的 frame -> imageName
     events.on('images.uploadFolder', () => {
         // 如果还没有加载任何相机或未记录名称映射，提示用户

@@ -1,36 +1,44 @@
 import { Events } from './events';
 
-// 读取全局注入的 __GS_PRELOAD__ 并批量加载资源
+// 优化的预加载：
+// 1. 直接 import ply 与 cameras
+// 2. cameras 导入完成后，若 window.__GS_PRELOAD__ 含 camerasUrl，再主动 fetch 其 JSON 内容并触发 camera.autoLoadCameras
+// 3. 若存在 imagesUrl（或新的 __GS_IMAGES_BASE__），在关键帧建立后由 camera.autoLoadCameras 内部触发 images.autoLoadFromBase
+// 移除旧的 HEAD 探测逻辑，改为按 cameras.json 中的 img_name 精确加载。
 export async function runPreload(events: Events) {
   const preload: any = (window as any).__GS_PRELOAD__;
   if (!preload) return;
-  const tasks: Promise<any>[] = [];
-  const { plyUrl, camerasUrl, imagesUrl } = preload;
-  // 加载 PLY
+  const { plyUrl, camerasUrl } = preload;
+  // Step1: 导入 ply 与 cameras（使用原有 import 机制，让场景与资源注册正常）
   if (plyUrl) {
-    tasks.push(events.invoke('import', plyUrl));
+    try { await events.invoke('import', plyUrl); } catch (e) { console.warn('[preload] ply import failed', e); }
   }
-  // 加载 cameras.json
+  let camerasJson: any[] | null = null;
   if (camerasUrl) {
-    tasks.push(events.invoke('import', camerasUrl));
-  }
-  // 加载原始图片：如果提供目录路径，尝试枚举常见文件名（需后端静态暴露）
-  if (imagesUrl) {
-    // 简单探测前16张图片 (支持 jpg / png)，存在即导入 camera pose 辅助（若采用其它机制可在此扩展）
-    const exts = ['.jpg', '.jpeg', '.png'];
-    for (let i = 0; i < 16; i++) {
-      for (const ext of exts) {
-        const candidate = `${imagesUrl}/${i}${ext}`;
-        tasks.push(fetch(candidate, { method: 'HEAD' }).then(r => {
-          if (r.ok) {
-            // 图片只用于在界面中可见，若需要贴图加载可在此扩展 texture 逻辑
-            // 暂不直接调用 import（import 期望 ply / json），仅记录存在
-            console.log('[preload image found]', candidate);
-          }
-        }).catch(() => {}));
+    try {
+      await events.invoke('import', camerasUrl); // 保留原有 import 行为（可能仅做缓存）
+      const r = await fetch(camerasUrl);
+      if (r.ok) {
+        const js = await r.json();
+        if (Array.isArray(js)) camerasJson = js;
+        else if (js?.poses && Array.isArray(js.poses)) camerasJson = js.poses; // 兼容旧格式
+      } else {
+        console.warn('[preload] cameras fetch failed status=', r.status);
       }
+    } catch(e) {
+      console.warn('[preload] cameras import/fetch error', e);
     }
   }
-  await Promise.all(tasks);
+  // Step2: 若成功获取 cameras 数据，触发自动关键帧构建事件
+  if (camerasJson && camerasJson.length) {
+    events.fire('camera.autoLoadCameras', camerasJson);
+  }
+  // Step3: 图片目录基路径：优先 __GS_IMAGES_BASE__，否则 preload.imagesUrl 兼容旧字段
+  const imagesBase: string | undefined = (window as any).__GS_IMAGES_BASE__ || preload.imagesUrl;
+  if (imagesBase) {
+    // 图片加载放在 camera.autoLoadCameras 内部延迟执行（需先建立 frameImageNameMap）
+    // 若 camerasJson 不存在（没有关键帧），仍可尝试直接触发，内部会检查映射是否有数据
+    events.fire('images.autoLoadFromBase', imagesBase);
+  }
   console.log('[preload done]');
 }
