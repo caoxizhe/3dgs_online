@@ -4,10 +4,12 @@ import { Events } from './events';
 // 1. 直接 import ply 与 cameras
 // 2. cameras 导入完成后，若 window.__GS_PRELOAD__ 含 camerasUrl，再主动 fetch 其 JSON 内容并触发 camera.autoLoadCameras
 // 3. 若存在 imagesUrl（或新的 __GS_IMAGES_BASE__），在关键帧建立后由 camera.autoLoadCameras 内部触发 images.autoLoadFromBase
-// 移除旧的 HEAD 探测逻辑，改为按 cameras.json 中的 img_name 精确加载。
 export async function runPreload(events: Events) {
   const preload: any = (window as any).__GS_PRELOAD__;
-  if (!preload) return;
+  if (!preload) {
+    console.debug('[preload] no __GS_PRELOAD__ found; skip auto import');
+    return;
+  }
   const { plyUrl, camerasUrl } = preload;
   // Step1: 导入 ply 与 cameras（使用原有 import 机制，让场景与资源注册正常）
   if (plyUrl) {

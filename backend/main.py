@@ -198,6 +198,7 @@ def viewer(job_id: str):
         "ply": f"{ply}" if ply else "",
         "cameras": f"{cams}" if cams else "",
         "images": images_url or "",
+        "autoplay": "1",
     }
     query = _up.urlencode(q)
     full_url = f"{base_editor}?{query}"

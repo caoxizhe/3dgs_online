@@ -1666,12 +1666,19 @@ const registerCameraPosesEvents = (events: Events) => {
         const framesForTimeline = newPoses.map(p => p.frame);
         events.fire('timeline.setSplatKeys', selectedSplat, framesForTimeline);
         events.fire('timeline.selectionChanged');
-        // 关键帧建立后自动按名称加载图片（若已存在 base 路径）
-        const base = (window as any).__GS_IMAGES_BASE__ as string | undefined;
-        if (base) {
-            events.fire('images.autoLoadFromBase', base);
-        }
+        // 不再在此处直接触发 images.autoLoadFromBase，避免与 runPreload 内重复触发导致并发双重 onload
         console.log(`[autoLoadCameras] loaded ${newPoses.length} poses`);
+        // 若 URL 指定 autoplay，则在关键帧建立完成后启动播放
+        if ((window as any).__GS_AUTOPLAY__) {
+            setTimeout(() => {
+                try {
+                    events.fire('timeline.setPlaying', true);
+                    console.log('[autoLoadCameras] autoplay timeline');
+                } catch (e) {
+                    console.warn('[autoLoadCameras] autoplay failed', e);
+                }
+            }, 0);
+        }
     });
 
     // 自动图片加载：根据 frameImageNameMap + base 逐个构造 URL 并加载
@@ -1682,7 +1689,11 @@ const registerCameraPosesEvents = (events: Events) => {
             return;
         }
         const base = String(baseDir).replace(/\/$/, '');
-        frameImageMap.clear();
+        // 改为不每次清空，防止并发重复触发时前一次正在加载的 onload 结果被清除；而是逐帧检查是否已存在图片。
+        // 若需要强制刷新，可在触发前手动 fire 一个自定义清理事件。
+        // 去重集合：记录已请求的 URL，避免重复创建 Image 导致克隆图像数量翻倍。
+        (window as any).__GS_IMAGE_URL_REQUESTED__ = (window as any).__GS_IMAGE_URL_REQUESTED__ || new Set<string>();
+        const requested: Set<string> = (window as any).__GS_IMAGE_URL_REQUESTED__;
         let count = 0;
         const entries = Array.from(frameImageNameMap.entries());
         entries.forEach(([frame, name]) => {
@@ -1692,6 +1703,11 @@ const registerCameraPosesEvents = (events: Events) => {
             for (const c of candidates) { chosen = c; break; }
             if (!chosen) return;
             const url = `${base}/${chosen}`;
+            // 若该帧已有至少一张图片且 URL 已经请求过，则跳过，避免重复缩略
+            const existing = frameImageMap.get(frame);
+            if (existing && existing.length > 0 && requested.has(url)) return;
+            if (requested.has(url)) return; // 全局 URL 去重
+            requested.add(url);
             const img = new Image();
             img.onload = () => {
                 const arr = frameImageMap.get(frame) || [];

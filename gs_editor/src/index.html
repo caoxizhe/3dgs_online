@@ -37,6 +37,28 @@
                     .catch(err => console.log('failed to register service worker', err));
             }
         </script>
+                <!-- Query 参数解析：ply / cameras / images / autoplay -->
+                <script>
+                (function(){
+                    try {
+                        const params = new URLSearchParams(location.search);
+                        const ply = params.get('ply');
+                        const cameras = params.get('cameras');
+                        const images = params.get('images');
+                        const autoplay = params.get('autoplay');
+                        if (ply || cameras || images) {
+                            window.__GS_PRELOAD__ = {
+                                plyUrl: ply || undefined,
+                                camerasUrl: cameras || undefined,
+                                imagesUrl: images || undefined
+                            };
+                        }
+                        if (images) window.__GS_IMAGES_BASE__ = images;
+                        if (autoplay && (autoplay === '1' || autoplay === 'true')) window.__GS_AUTOPLAY__ = true;
+                        console.debug('[index.html] preload vars', window.__GS_PRELOAD__, window.__GS_AUTOPLAY__);
+                    } catch(e) { console.warn('[index.html] parse query failed', e); }
+                })();
+                </script>
     </head>
 
     <body>
