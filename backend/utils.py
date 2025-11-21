@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import io
@@ -40,27 +41,32 @@ async def save_upload_files(files: List[UploadFile], dest_dir: Path) -> List[Pat
 
 def zip_dir(src_dir: Path, out_zip_path: Path) -> Path:
     out_zip_path.parent.mkdir(parents=True, exist_ok=True)
-    base = out_zip_path.with_suffix("")  # remove .zip
+    base = out_zip_path.with_suffix("")
     shutil.make_archive(str(base), "zip", root_dir=str(src_dir))
     return base.with_suffix(".zip")
 
 
-def extract_zip(zip_path: Path, dest_dir: Path, exts=(".jpg", ".jpeg", ".png", ".JPG", ".PNG")) -> List[Path]:
-    """Extract image files from a zip into dest_dir. Returns list of extracted file paths."""
-    extracted: List[Path] = []
+def extract_zip(zip_path: Path, dest_dir: Path) -> List[Path]:
+    """
+    Extract ALL contents of a zip into dest_dir, preserving structure.
+    Returns a list of image paths found (for validation).
+    """
     dest_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Extract Everything (Structure Preserved)
     with zipfile.ZipFile(zip_path, 'r') as zf:
-        for name in zf.namelist():
-            if name.endswith('/'):
-                continue
-            lower = name.lower()
-            if not any(lower.endswith(e.lower()) for e in exts):
-                continue
-            target = dest_dir / Path(name).name
-            with zf.open(name) as src, target.open('wb') as dst:
-                shutil.copyfileobj(src, dst)
-            extracted.append(target)
-    return extracted
+        zf.extractall(dest_dir)
+
+    # Scan for images (just to return a valid list for the API)
+    image_exts = {".jpg", ".jpeg", ".png", ".JPG", ".PNG"}
+    images_found = []
+    
+    for root, dirs, files in os.walk(dest_dir):
+        for name in files:
+            if Path(name).suffix.lower() in image_exts:
+                images_found.append(Path(root) / name)
+                
+    return images_found
 
 
 def write_text(p: Path, text: str) -> None:
