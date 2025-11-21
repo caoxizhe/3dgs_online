@@ -100,21 +100,24 @@ cd 3dgs_online/gaussian-splatting/submodules/diff-gaussian-rasterization
 pip install .
 ```
 
+## 修改 UI
+
+1. 修改 app.jsx 代码后运行 npm run build 以更新 Python 使用的 dist/ 文件夹
+```bash
+cd frontend-react
+npm run build
+```
+
 ## 运行网站 (后端 + 前端)
 
-1. 启动后端（服务器）
+1. 启动后端前端（服务器 + 网页）
 
 ```bash
 conda activate 3dgs_online
 python -m backend.main
 ```
 
-2. 启动前端（网页）
 
-```bash
-conda activate 3dgs_online
-python frontend/app.py
-```
 4. 使用流程
 
 （1）打开前端页面
