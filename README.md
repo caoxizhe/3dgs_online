@@ -102,6 +102,12 @@ pip install .
 
 ## 修改 UI
 
+1. 设置
+```bash
+   cd frontend-react
+   npm install
+```
+
 1. 修改 app.jsx 代码后运行 npm run build 以更新 Python 使用的 dist/ 文件夹
 ```bash
 cd frontend-react
