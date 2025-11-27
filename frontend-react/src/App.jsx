@@ -41,8 +41,9 @@ const ProjectCard = ({ project, onClick, onViewLogs, onDelete }) => {
   // 判断项目状态
   const isProcessing = !project.done && project.status !== 'failed';
   const isFailed = project.status === 'failed';
+  const [imgError, setImgError] = useState(false); // 新增：用于跟踪图片是否加载失败
   
-  // 移除缩略图逻辑，只保留 ZIP 下载链接
+  // ZIP文件下载链接
   const zipUrl = project.zip_url ? `${API_BASE_URL}${project.zip_url}` : null;
 
   // 辅助函数：根据模式显示不同标签
@@ -50,6 +51,20 @@ const ProjectCard = ({ project, onClick, onViewLogs, onDelete }) => {
     if (mode === 'minigs2') return <span className="text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded border border-purple-500/30 flex items-center gap-1"><Zap size={10} fill="currentColor"/> 迷你GS</span>;
     return <span className="text-[10px] bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded border border-blue-500/30">标准</span>;
   };
+
+  // --- 缩略图逻辑 ---
+  // 1. 如果有 thumbnail，且没有发生过加载错误，则尝试构建 URL
+  // 2. 如果 thumbnail 是 null，或者之前加载失败了，则返回 null (触发渲染方块)
+  const getThumbnailSrc = () => {
+      if (!project.thumbnail || imgError) return null;
+      
+      if (project.thumbnail.startsWith('http') || project.thumbnail.startsWith('blob:')) {
+          return project.thumbnail;
+      }
+      return `${API_BASE_URL}${project.thumbnail}`;
+  };
+
+  const thumbnailSrc = getThumbnailSrc();
 
   return (
     <div 
@@ -99,11 +114,20 @@ const ProjectCard = ({ project, onClick, onViewLogs, onDelete }) => {
       {/* 完成或失败状态的视图 */}
       {!isProcessing && (
         <>
-          {/* 替换 <img> 为 静态渐变背景，确保演示时不报错 */}
-          <div className="w-full h-full bg-gradient-to-br from-gray-800 to-gray-900 flex items-center justify-center group-hover:scale-105 transition-transform duration-500">
-             {/* 一个装饰性的图标 */}
-             <Cuboid size={64} className="text-white/5 group-hover:text-white/10 transition-colors" strokeWidth={1} />
-          </div>
+          {/* [核心修改] 逻辑判断：如果有缩略图URL且未出错，显示图片；否则显示之前的方块 */}
+          {thumbnailSrc ? (
+              <img 
+                src={thumbnailSrc} 
+                alt={project.scene}
+                onError={() => setImgError(true)} // 如果加载失败，标记为错误，下次渲染就会显示方块
+                className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-all duration-500"
+              />
+          ) : (
+              // 这里的代码就是之前的“方块”，作为默认显示
+              <div className="w-full h-full bg-gradient-to-br from-gray-800 to-gray-900 flex items-center justify-center group-hover:scale-105 transition-transform duration-500">
+                 <Cuboid size={64} className="text-white/5 group-hover:text-white/10 transition-colors" strokeWidth={1} />
+              </div>
+          )}
 
           <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent opacity-60 group-hover:opacity-80 transition-opacity pointer-events-none" />
           
@@ -442,7 +466,8 @@ export default function App() {
             status_url: data.status_url,
             done: false,
             stage: "已上传",
-            // 移除 thumbnail 字段
+            // [核心修改] 恢复 thumbnail 字段，读取后端返回的数据
+            thumbnail: data.thumbnail || null, 
         };
         setProjects(prev => [newProject, ...prev]);
         setIsModalOpen(false);
