@@ -19,6 +19,7 @@ from pathlib import Path as _Path
 
 from . import config as C
 from . import reconstruction as R
+from .reconstruction_mini import reconstruct_mini
 from .utils import make_job_id, save_upload_files, zip_dir, extract_zip
 
 app = FastAPI(title="3DGS Online Reconstructor", version="0.1.2")
@@ -134,12 +135,26 @@ def list_projects():
 
 # --- 2. Viewer 的辅助函数 ---
 #查找生成的点云文件的路径
+import re
 def _find_point_cloud(out_dir: Path) -> str | None:
-    target = out_dir / "point_cloud" / "iteration_30000" / "point_cloud.ply"
-    if target.exists():
-        # Returns relative path like "/outputs/truck/..."
-        return f"/outputs/{out_dir.name}/" + str(target.relative_to(out_dir)).replace("\\", "/")
-    return None
+    pc_dir = out_dir / "point_cloud"
+    if not pc_dir.exists() or not pc_dir.is_dir():
+        return None
+    # 查找所有 iteration_<数字> 目录
+    candidates = []
+    for sub in pc_dir.iterdir():
+        if sub.is_dir():
+            m = re.match(r"iteration_(\d+)", sub.name)
+            if m:
+                ply_path = sub / "point_cloud.ply"
+                if ply_path.exists():
+                    candidates.append((int(m.group(1)), ply_path))
+    if not candidates:
+        return None
+    # 选数字最大的
+    candidates.sort(reverse=True)
+    best_ply = candidates[0][1]
+    return f"/outputs/{out_dir.name}/" + str(best_ply.relative_to(out_dir)).replace("\\", "/")
 
 #查找 cameras.json 文件的路径
 def _find_cameras(out_dir: Path) -> str | None:
@@ -261,11 +276,14 @@ def delete_project(job_id: str):
         return {"status": "error", "message": str(e)}
 
 # --- 3. 重建逻辑 ---
-def _async_reconstruct(job_id, scene, upload_type, img_dir, work_dir, out_dir, log_file):
+def _async_reconstruct(job_id, scene, upload_type, img_dir, work_dir, out_dir, log_file, mode=None):
     prev = JOBS.get(job_id, {})
-    JOBS[job_id] = {**prev, "job_id": job_id, "scene": scene, "stage": "running", "done": False, "log_url": f"/logs/{log_file.name}"}
+    JOBS[job_id] = {**prev, "job_id": job_id, "scene": scene, "stage": "running", "done": False, "log_url": f"/logs/{log_file.name}", "mode": mode}
     try:
-        result = R.reconstruct(images_dir=img_dir, work_dir=work_dir, out_dir=out_dir, log_file=log_file)
+        if mode == "minigs2":
+            result = reconstruct_mini(images_dir=img_dir, work_dir=work_dir, out_dir=out_dir, log_file=log_file)
+        else:
+            result = R.reconstruct(images_dir=img_dir, work_dir=work_dir, out_dir=out_dir, log_file=log_file)
         zip_path = zip_dir(out_dir, out_dir.parent / f"{job_id}.zip")
         JOBS[job_id].update({
             "done": True,
@@ -283,6 +301,7 @@ async def reconstruct_stream(
     files: List[UploadFile] = File(...),
     scene_name: Optional[str] = Form(None),
     upload_type: str = Form("files"),
+    mode: Optional[str] = Form(None),
 ):
     # 清理场景名称以用作作业 ID 或生成一个唯一的 ID
     if scene_name:
@@ -316,15 +335,16 @@ async def reconstruct_stream(
         cover_url = f"/uploads/{job_id}/input/{saved[0].name}"
     # 初始化 JOBS 项方便前端立即获取封面
     base = JOBS.get(job_id, {})
-    JOBS[job_id] = {**base, "job_id": job_id, "scene": scene_name or job_id, "cover_url": cover_url, "stage": "running", "done": False, "log_url": f"/logs/{log_file.name}"}
+    JOBS[job_id] = {**base, "job_id": job_id, "scene": scene_name or job_id, "cover_url": cover_url, "stage": "running", "done": False, "log_url": f"/logs/{log_file.name}", "mode": mode}
 
-    th = threading.Thread(target=_async_reconstruct, args=(job_id, scene_name or job_id, upload_type, img_dir, work_dir, out_dir, log_file), daemon=True)
+    th = threading.Thread(target=_async_reconstruct, args=(job_id, scene_name or job_id, upload_type, img_dir, work_dir, out_dir, log_file, mode), daemon=True)
     th.start()
 
     return {
         "job_id": job_id,
         "scene": scene_name or job_id,
         "upload_type": upload_type,
+        "mode": mode,
         "log_url": f"/logs/{log_file.name}",
         "status_url": f"/result/{job_id}",
         "cover_url": cover_url,

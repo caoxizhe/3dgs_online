@@ -96,9 +96,22 @@ cd 3dgs_online/gaussian-splatting/submodules/diff-gaussian-rasterization
 pip install .
 ```
 
+3. mini-splatting2
+
+安装mini-splatting2相关依赖
+```bash
+cd mini-splatting2
+pip install -r requirements.txt 
+
+# 如果日志中显示缺少了某些依赖项，请自己手动补装一下
+# 可以如下方式安装
+cd 3dgs_online/mini-splatting2/submodules/diff-gaussian-rasterization_ms
+pip install .
+```
+
 ## 修改 UI
 
-1. 修改 app.jsx 代码后运行 npm run build 以更新 Python 使用的 dist/ 文件夹
+1. 修改 app.jsx 代码后运行 npm run build 以更新 dist/ 文件夹
 ```bash
 cd frontend
 npm run build
@@ -116,15 +129,15 @@ python -m backend.main
 
 2. 使用流程
 
-（2）上传同一场景多张图片（也支持上传文件夹、zip格式压缩包）
+（1）上传同一场景多张图片（也支持上传文件夹、zip格式压缩包）
 
-（3）输入场景名称（可选）
+（2）输入场景名称
 
-（4）点击“重建”
+（3）点击“重建”（可以选择不同的3dgs方法）
 
-（5）等待后端执行完成（同步阻塞）
+（4）等待后端执行完成
 
-（6）查看日志、下载结果 zip
+（5）查看日志、下载结果 zip
 
 5. 输出与文件位置
 
@@ -140,7 +153,7 @@ python -m backend.main
 
 4. 浏览与自动加载 (gs_editor 集成)
 
-训练完成后结果区会出现“浏览 (gs_editor)”按钮与一个跳转链接。点击后会打开 gs_editor，并自动加载：
+训练完成后点击任务卡片，会打开 gs_editor，并自动加载：
 - 点云: point_cloud.ply (迭代30000)
 - 相机: cameras.json
 - 原始图片: /uploads/<job-id>/input 下探测到的若干图片
@@ -151,9 +164,6 @@ python -m backend.main
 - gs_editor 在 index.html 中解析查询参数，将其写入 window.__GS_PRELOAD__。
 - 运行时在 main.ts 中调用 runPreload(events) 自动触发加载（PLY 与 cameras 通过现有 import 事件）。
 
-环境变量 / 配置：
-- GS_EDITOR_URL：后端中设置编辑器基础路径（默认 `/gs_editor/dist/index.html`）。
-- BACKEND_URL：前端可通过 `localStorage` 或 `window.BACKEND_URL` 指定后端根 URL。
 
 
 
