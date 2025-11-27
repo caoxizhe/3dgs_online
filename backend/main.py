@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import traceback
+import shutil
 from pathlib import Path
 from typing import List, Optional
-
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
-from fastapi import APIRouter
 import threading
 import json
 import time
+import urllib.parse
+import socket
+
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
@@ -21,13 +23,11 @@ from .utils import make_job_id, save_upload_files, zip_dir, extract_zip
 
 app = FastAPI(title="3DGS Online Reconstructor", version="0.1.2")
 
-# 简单的内存任务状态映射（非持久化）
 JOBS: dict[str, dict] = {}
 JOB_CANCELLED: set[str] = set()
 
 # CORS
 if C.ALLOWED_ORIGINS == ["*"]:
-    # 当允许任意来源且需要携带凭据时，使用 allow_origin_regex 来回显 Origin
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=".*",
@@ -44,154 +44,126 @@ else:
         allow_headers=["*"],
     )
 
-# Static mounts for outputs and logs
+# 静态文件挂载
 app.mount("/outputs", StaticFiles(directory=str(C.OUTPUT_DIR)), name="outputs")
 app.mount("/logs", StaticFiles(directory=str(C.LOG_DIR)), name="logs")
 app.mount("/uploads", StaticFiles(directory=str(C.UPLOAD_DIR)), name="uploads")
-# Serve gs_editor (built assets) so前端可直接访问
 
 _gs_dist = _Path(C.BASE_DIR) / "gs_editor" / "dist"
 if _gs_dist.exists():
     app.mount("/gs_editor/dist", StaticFiles(directory=str(_gs_dist)), name="gs_editor")
 
-# Mount new pure JS frontend (index.html + static assets)
-_frontend_dir = _Path(C.BASE_DIR) / "frontend"
-if _frontend_dir.exists():
-    app.mount("/frontend", StaticFiles(directory=str(_frontend_dir), html=True), name="frontend")
 
-    @app.get("/")
-    def root_redirect():
-        """统一重定向到 /frontend/index.html 避免相对路径问题"""
-        index_file = _frontend_dir / "index.html"
-        if index_file.exists():
-            return RedirectResponse(url="/frontend/index.html")
-        return RedirectResponse(url="/health")
+# --- 健康检查端点 ---
 
-
+# 验证服务器是否正在运行并检查关键目录路径
 @app.get("/health")
 def health():
-    """Simple health and environment check."""
     return {
         "status": "ok",
         "gs_dir": str(C.GAUSSIAN_SPLATTING_DIR),
         "outputs_dir": str(C.OUTPUT_DIR),
         "uploads_dir": str(C.UPLOAD_DIR),
-        "logs_dir": str(C.LOG_DIR),
-        "gs_editor_url": C.GS_EDITOR_URL,
-        "gs_editor_dist_path": str(_gs_dist),
-        "gs_editor_mounted": bool(_gs_dist.exists()),
-        "gs_editor_index_exists": bool((_gs_dist / "index.html").exists()) if _gs_dist.exists() else False,
     }
 
+# --- 1. 项目端点 ---
+# 列出所有正在运行和已完成的项目
+@app.get("/projects")
+def list_projects():
+    project_list = []
+    seen_ids = set()
+    
+    # 首先，从内存中的 JOBS 字典中添加所有当前正在运行的作业
+    for job_id, job_data in JOBS.items():
+        project_list.append(job_data)
+        seen_ids.add(job_id)
 
-@app.get("/status/{job_id}")
-def status(job_id: str):
-    out_dir = C.OUTPUT_DIR / job_id
-    status_file = out_dir / "status.json"
-    if not status_file.exists():
-        return {"stage": "unknown"}
-    try:
-        import json
-        return json.loads(status_file.read_text(encoding="utf-8"))
-    except Exception:
-        return {"stage": "corrupt"}
+    # 扫描输出目录以查找不在内存中的已完成作业
+    if C.OUTPUT_DIR.exists():
+        for job_dir in C.OUTPUT_DIR.iterdir():
+            if job_dir.is_dir() and job_dir.name not in seen_ids:
+                job_id = job_dir.name
+                # 检查最终的点云文件是否存在，如果有则表示成功
+                ply_exists = (job_dir / "point_cloud" / "iteration_30000" / "point_cloud.ply").exists()
 
+                status_file = job_dir / "status.json"
+                status_data = {}
+                if status_file.exists():
+                    try:
+                        status_data = json.loads(status_file.read_text(encoding="utf-8"))
+                    except:
+                        pass
 
-@app.post("/reconstruct")
-async def reconstruct(
-    files: List[UploadFile] = File(...),
-    scene_name: Optional[str] = Form(None),
-    upload_type: str = Form("files"),  # files | folder | zip
-):
-    if not files:
-        raise HTTPException(status_code=400, detail="No files uploaded")
+                # 封面图逻辑：优先用上传目录的第一张图片
+                cover_url = _first_image_url(job_id)
+                img_dir = C.UPLOAD_DIR / job_id / "input"
+                debug_imgs = []
+                if img_dir.exists() and img_dir.is_dir():
+                    debug_imgs = [p.name for p in img_dir.iterdir() if p.is_file()]
+                # 检查 cover_url 映射的文件是否存在
+                cover_path = img_dir / (cover_url.split('/')[-1]) if cover_url and cover_url.startswith('/uploads/') else None
+                cover_exists = cover_path.exists() if cover_path else False
+                print(f"[DEBUG] job_id={job_id} img_dir={img_dir} imgs={debug_imgs} cover_url={cover_url} cover_exists={cover_exists}")
 
-    # 若用户提供 scene_name，则直接用其作为 job_id，保持目录与文件名一致
-    if scene_name:
-        # 清理非法字符，限制为字母数字下划线和中划线
-        import re
-        cleaned = re.sub(r"[^A-Za-z0-9_-]", "_", scene_name.strip()) or "scene"
-        job_id = cleaned
-    else:
-        job_id = make_job_id("recon")
-    scene = job_id
+                if ply_exists:
+                    # 如果成功，创建一个“完成”的项目条目
+                    zip_path = C.OUTPUT_DIR / f"{job_id}.zip"
+                    zip_url = f"/outputs/{job_id}.zip" if zip_path.exists() else None
+                    project_list.append({
+                        "job_id": job_id,
+                        "scene": status_data.get("scene", job_id),
+                        "stage": "Done",
+                        "done": True,
+                        "zip_url": zip_url,
+                        "cover_url": cover_url
+                    })
+                elif status_data.get("exit_code", 0) != 0:
+                    # 如果状态指示失败，则创建一个“失败”的项目条目
+                    project_list.append({
+                        "job_id": job_id,
+                        "scene": status_data.get("scene", job_id),
+                        "stage": "Failed",
+                        "done": True,
+                        "error": "Training failed",
+                        "cover_url": cover_url
+                    })
 
-    # Layout
-    job_root = C.UPLOAD_DIR / job_id
-    # 根据新要求：前端上传的图片直接放在 input 目录
-    img_dir = job_root / "input"
-    work_dir = job_root / "work"
-    out_dir = C.OUTPUT_DIR / job_id
-    log_file = C.LOG_DIR / f"{job_id}.log"
-
-    saved: List[Path] = []
-    if upload_type == "zip":
-        if len(files) != 1:
-            raise HTTPException(status_code=400, detail="Zip 模式仅允许上传一个压缩包")
-        tmp_zip = job_root / files[0].filename
-        tmp_saved = await save_upload_files(files, job_root)
-        if not tmp_saved:
-            raise HTTPException(status_code=400, detail="未收到 zip 文件")
-        # 解压图片到 images_dir
-        saved = extract_zip(tmp_saved[0], img_dir)
-        if not saved:
-            raise HTTPException(status_code=400, detail="zip 中未找到可用图片")
-    else:
-        # files 或 folder 模式均视为多文件图片上传
-        saved = await save_upload_files(files, img_dir)
-        if len(saved) == 0:
-            raise HTTPException(status_code=400, detail="No images saved")
-
-    # Run pipeline (synchronously for simplicity)
-    try:
-        result = R.reconstruct(
-            images_dir=img_dir,
-            work_dir=work_dir,
-            out_dir=out_dir,
-            log_file=log_file,
-        )
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Reconstruction error: {e}")
-
-    # Zip output for download
-    zip_path = (out_dir.parent / f"{job_id}.zip")
-    zip_path = zip_dir(out_dir, zip_path)
-
-    # Public URLs (served by StaticFiles)
-    out_url = f"/outputs/{job_id}"
-    zip_url = f"/outputs/{zip_path.name}"
-    log_url = f"/logs/{log_file.name}"
-
-    # 保留同步接口，但移除 output_dir 字段
-    return {
-        "job_id": job_id,
-        "scene": scene,
-        "upload_type": upload_type,
-        "saved_images": [str(p.name) for p in saved],
-        "exit_code": result.get("exit_code", -1),
-        "zip_url": zip_url,
-        "log_url": log_url,
-        "command": result.get("command"),
-    }
+    # 返回按 job_id 降序排序的项目列表
+    return sorted(project_list, key=lambda x: x["job_id"], reverse=True)
 
 
+# --- 2. Viewer 的辅助函数 ---
+#查找生成的点云文件的路径
 def _find_point_cloud(out_dir: Path) -> str | None:
-    # 固定目标路径: point_cloud/iteration_30000/point_cloud.ply
     target = out_dir / "point_cloud" / "iteration_30000" / "point_cloud.ply"
     if target.exists():
+        # Returns relative path like "/outputs/truck/..."
         return f"/outputs/{out_dir.name}/" + str(target.relative_to(out_dir)).replace("\\", "/")
     return None
 
-
+#查找 cameras.json 文件的路径
 def _find_cameras(out_dir: Path) -> str | None:
-    # 固定目标路径: cameras.json 位于输出根目录
     target = out_dir / "cameras.json"
     if target.exists():
         return f"/outputs/{out_dir.name}/" + str(target.relative_to(out_dir)).replace("\\", "/")
     return None
 
+# 从 uploads/<job_id>/input/ 中选第一张图片作为封面
+def _first_image_url(job_id: str) -> Optional[str]:
+    try:
+        img_dir = C.UPLOAD_DIR / job_id / "input"
+        if not img_dir.exists() or not img_dir.is_dir():
+            return None
+        valid_exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".JPG"}
+        imgs = sorted([p for p in img_dir.iterdir() if p.is_file() and p.suffix.lower() in valid_exts])
+        if not imgs:
+            return None
+        return f"/uploads/{job_id}/input/{imgs[0].name}"
+    except Exception:
+        return None
 
+
+# 为 3D viewer 生成 URL 的端点（新版，支持 cameras.json 和图片目录自动拼接）
 @app.get("/viewer/{job_id}")
 def viewer(job_id: str):
     """Return a ready-to-use gs_editor URL with query parameters for ply/cameras/images.
@@ -254,89 +226,104 @@ def viewer(job_id: str):
         "diagnostics": diagnostics,
     }
 
+#获取特定作业的详细结果/状态的端点
+@app.get("/result/{job_id}")
+def result(job_id: str):
+    # 在内存字典中检查作业状态
+    data = JOBS.get(job_id)
+    if not data: # 如果未找到，则检查磁盘上的状态文件
+        status_file = C.OUTPUT_DIR / job_id / "status.json"
+        if status_file.exists():
+            try:
+                disk_status = json.loads(status_file.read_text(encoding="utf-8"))
+                zip_path = (C.OUTPUT_DIR / job_id).parent / f"{job_id}.zip"
+                disk_status["zip_url"] = f"/outputs/{zip_path.name}" if zip_path.exists() else None
+                disk_status["job_id"] = job_id
+                return disk_status
+            except: pass
+        return {"error": "job not found"}
+    return data
 
-def _async_reconstruct(job_id: str, scene: str, upload_type: str, img_dir: Path, work_dir: Path, out_dir: Path, log_file: Path):
-    # 保留 cover_url 以便后续轮询仍能看到封面
-    cover_url = JOBS.get(job_id, {}).get("cover_url")
-    JOBS[job_id] = {"stage": "running", "done": False, "log_url": f"/logs/{log_file.name}", "cover_url": cover_url}
-    if job_id in JOB_CANCELLED:
-        JOBS[job_id].update({"done": True, "exit_code": -1, "error": "cancelled"})
-        return
+#删除项目及其所有关联文件的端
+@app.delete("/delete/{job_id}")
+def delete_project(job_id: str):
+    if job_id in JOBS: del JOBS[job_id]
+    try:
+        # 从磁盘中删除所有关联的目录和文件
+        if (C.UPLOAD_DIR / job_id).exists(): shutil.rmtree(C.UPLOAD_DIR / job_id)
+        if (C.OUTPUT_DIR / job_id).exists(): shutil.rmtree(C.OUTPUT_DIR / job_id)
+        zip_file = C.OUTPUT_DIR / f"{job_id}.zip"
+        if zip_file.exists(): zip_file.unlink()
+        log_file = C.LOG_DIR / f"{job_id}.log"
+        if log_file.exists(): log_file.unlink()
+        return {"status": "deleted", "job_id": job_id}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+# --- 3. 重建逻辑 ---
+def _async_reconstruct(job_id, scene, upload_type, img_dir, work_dir, out_dir, log_file):
+    prev = JOBS.get(job_id, {})
+    JOBS[job_id] = {**prev, "job_id": job_id, "scene": scene, "stage": "running", "done": False, "log_url": f"/logs/{log_file.name}"}
     try:
         result = R.reconstruct(images_dir=img_dir, work_dir=work_dir, out_dir=out_dir, log_file=log_file)
-        if job_id in JOB_CANCELLED:
-            # 若已取消则不再继续打包与查找PLY
-            JOBS[job_id].update({"done": True, "exit_code": -1, "error": "cancelled"})
-            return
-        # After training, zip outputs
-        zip_path = (out_dir.parent / f"{job_id}.zip")
-        zip_path = zip_dir(out_dir, zip_path)
-        point_cloud_url = _find_point_cloud(out_dir)
-        cameras_url = _find_cameras(out_dir)
+        zip_path = zip_dir(out_dir, out_dir.parent / f"{job_id}.zip")
         JOBS[job_id].update({
             "done": True,
+            "stage": "Done",
             "exit_code": result.get("exit_code", -1),
             "zip_url": f"/outputs/{zip_path.name}",
-            "point_cloud_url": point_cloud_url,
-            "cameras_url": cameras_url,
-            "command": result.get("command"),
+            "command": result.get("command")
         })
     except Exception as e:
-        JOBS[job_id].update({"done": True, "error": str(e), "exit_code": -1})
+        JOBS[job_id].update({"done": True, "stage": "Failed", "error": str(e), "exit_code": -1})
 
-
+#用于从上传的文件开始新重建作业reconstruction的端点
 @app.post("/reconstruct_stream")
 async def reconstruct_stream(
     files: List[UploadFile] = File(...),
     scene_name: Optional[str] = Form(None),
     upload_type: str = Form("files"),
 ):
-    if not files:
-        raise HTTPException(status_code=400, detail="No files uploaded")
-
+    # 清理场景名称以用作作业 ID 或生成一个唯一的 ID
     if scene_name:
         import re
         cleaned = re.sub(r"[^A-Za-z0-9_-]", "_", scene_name.strip()) or "scene"
         job_id = cleaned
     else:
         job_id = make_job_id("recon")
-    scene = job_id
+    
+    # 定义作业文件的路径
     job_root = C.UPLOAD_DIR / job_id
-    img_dir = job_root / "input"  # 新布局
+    img_dir = job_root / "input"
     work_dir = job_root / "work"
     out_dir = C.OUTPUT_DIR / job_id
     log_file = C.LOG_DIR / f"{job_id}.log"
 
+    # 处理文件上传：保存单个文件或解压缩 zip 存档
     saved: List[Path] = []
     if upload_type == "zip":
-        if len(files) != 1:
-            raise HTTPException(status_code=400, detail="Zip 模式仅允许上传一个压缩包")
-        tmp_saved = await save_upload_files(files, job_root)
-        from .utils import extract_zip
-        saved = extract_zip(tmp_saved[0], img_dir)
-        if not saved:
-            raise HTTPException(status_code=400, detail="zip 中未找到可用图片")
+        tmp = await save_upload_files(files, job_root)
+        try:
+            saved = extract_zip(tmp[0], img_dir) or []
+        except Exception:
+            saved = []
     else:
         saved = await save_upload_files(files, img_dir)
-        if not saved:
-            raise HTTPException(status_code=400, detail="No images saved")
-
-    # 启动后台线程执行重建
-    th = threading.Thread(target=_async_reconstruct, args=(job_id, scene, upload_type, img_dir, work_dir, out_dir, log_file), daemon=True)
-    th.start()
 
     # 计算封面图（第一张上传图）
     cover_url = None
     if saved:
-        # 静态服务路径 /uploads/<job_id>/input/<filename>
         cover_url = f"/uploads/{job_id}/input/{saved[0].name}"
     # 初始化 JOBS 项方便前端立即获取封面
     base = JOBS.get(job_id, {})
-    JOBS[job_id] = {**base, "cover_url": cover_url, "stage": "running", "done": False, "log_url": f"/logs/{log_file.name}"}
+    JOBS[job_id] = {**base, "job_id": job_id, "scene": scene_name or job_id, "cover_url": cover_url, "stage": "running", "done": False, "log_url": f"/logs/{log_file.name}"}
+
+    th = threading.Thread(target=_async_reconstruct, args=(job_id, scene_name or job_id, upload_type, img_dir, work_dir, out_dir, log_file), daemon=True)
+    th.start()
 
     return {
         "job_id": job_id,
-        "scene": scene,
+        "scene": scene_name or job_id,
         "upload_type": upload_type,
         "log_url": f"/logs/{log_file.name}",
         "status_url": f"/result/{job_id}",
@@ -344,65 +331,28 @@ async def reconstruct_stream(
     }
 
 
-@app.get("/result/{job_id}")
-def result(job_id: str):
-    data = JOBS.get(job_id)
-    if not data:
-        return {"error": "job not found"}
-    return data
+# --- 4. 捕获所有路由 ---
+_frontend_dist = C.BASE_DIR / "frontend" / "dist"
 
-@app.delete("/delete/{job_id}")
-def delete_job(job_id: str):
-    """删除/取消任务：
-    - 标记任务为取消
-    - 删除 uploads / outputs / log 文件
-    - 从 JOBS 中移除（或返回最后状态）
-    注：若重建线程已在执行，无法强制中断，只能标记取消。
-    """
-    if job_id not in JOBS:
-        raise HTTPException(status_code=404, detail="job not found")
-    JOB_CANCELLED.add(job_id)
-    entry = JOBS[job_id]
-    entry.update({"done": True, "error": "cancelled"})
-    # 物理删除目录与日志
-    try:
-        up = C.UPLOAD_DIR / job_id
-        out = C.OUTPUT_DIR / job_id
-        logf = C.LOG_DIR / f"{job_id}.log"
-        def _rm(p: Path):
-            if p.exists():
-                if p.is_file():
-                    p.unlink(missing_ok=True)
-                else:
-                    import shutil; shutil.rmtree(p, ignore_errors=True)
-        _rm(up); _rm(out); _rm(logf)
-    except Exception as e:
-        entry.setdefault("warnings", []).append(f"cleanup_error: {e}")
-    # 可以选择保留 JOBS 条目一段时间，当前直接返回状态
-    return {"job_id": job_id, "status": "deleted", "cover_url": entry.get("cover_url")}
+@app.get("/{full_path:path}")
+async def serve_react_app(full_path: str):
+    if full_path.startswith(("api/", "outputs", "logs", "uploads", "reconstruct", "projects", "status", "result", "health", "viewer", "gs_editor")):
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    
+    file_path = _frontend_dist / full_path
+    if file_path.exists() and file_path.is_file():
+        return FileResponse(str(file_path))
+    
+    if "." in full_path.split("/")[-1]:
+         return JSONResponse(status_code=404, content={"detail": "Asset not found"})
 
+    if _frontend_dist.exists():
+        return FileResponse(str(_frontend_dist / "index.html"))
+        
+    return JSONResponse(status_code=404, content={"error": "Frontend not built"})
 
+# --- 主执行块 ---
 if __name__ == "__main__":
     import uvicorn
-    import socket
-
-    def _find_free_port(preferred: int) -> int:
-        # 尝试首选端口
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                s.bind((C.HOST, preferred))
-                return preferred
-            except OSError:
-                pass
-        # 使用系统分配的空闲端口
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind((C.HOST, 0))
-            return s.getsockname()[1]
-
-    port = _find_free_port(C.PORT)
-    frontend_hint = ''
-    if _frontend_dir.exists():
-        frontend_hint = f"\n[frontend] Open: http://{C.HOST}:{port}/frontend/index.html"
-    print(f"[backend] Serving on http://{C.HOST}:{port}{frontend_hint}")
-    uvicorn.run(app, host=C.HOST, port=port)
+    print("--- STARTING SERVER V8 (HARDCODED URL + NO 422 ERROR) ---")
+    uvicorn.run(app, host=C.HOST, port=8000)

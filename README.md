@@ -1,10 +1,10 @@
 # 3DGS Online
 
-前后端分离的 3D Gaussian Splatting 重建演示。后端（FastAPI）调用 COLMAP + gaussian-splatting 完成重建，并提供下载与查看；前端现已采用纯 HTML + 原生 JavaScript（取代旧 Gradio）。
+3D Gaussian Splatting 重建演示网站。用户上传图片，在服务器上调用 COLMAP + gaussian-splatting 完成重建，并提供可下载的结果。
 
 ## 目录结构
 - backend/ 后端服务（FastAPI）
-- frontend/ 新前端（原生 HTML + JS）
+- frontend/ 前端（React）
 - data/uploads 临时任务与原始图片
 - data/outputs 每个任务的重建结果
 
@@ -96,44 +96,35 @@ cd 3dgs_online/gaussian-splatting/submodules/diff-gaussian-rasterization
 pip install .
 ```
 
+## 修改 UI
+
+1. 修改 app.jsx 代码后运行 npm run build 以更新 Python 使用的 dist/ 文件夹
+```bash
+cd frontend
+npm run build
+```
+
 ## 运行网站 
 
-1. 启动后端（服务器）
+1. 启动服务器 
 
 ```bash
 conda activate 3dgs_online
 python -m backend.main
 ```
 
-2. 打开前端
 
-启动后端后应该会看到如下命令行
-```bash
-[backend] Serving on http://0.0.0.0:8000
-[frontend] Open: http://0.0.0.0:8000/frontend/index.html
-```
+2. 使用流程
 
-打开前端链接即可
+（2）上传同一场景多张图片（也支持上传文件夹、zip格式压缩包）
 
-3. 使用流程（新前端）
+（3）输入场景名称（可选）
 
-（1）访问前端页面 `index.html`
+（4）点击“重建”
 
-（2）点击“新建”或“新任务”进入弹窗
+（5）等待后端执行完成（同步阻塞）
 
-（3）选择上传模式：Files / Folder / Zip
-
-（4）拖拽或选择文件（Folder 模式依赖浏览器对 `webkitdirectory` 支持）
-
-（5）填写场景名称（可选，作为 job_id）
-
-（6）点击“开始重建”提交；任务卡片出现并显示阶段 / 状态徽章
-
-（7）日志：点击“日志”按钮弹出实时滚动窗口（轮询 `/logs/<job>.log`）
-
-（8）完成后：卡片显示 READY，可下载 ZIP，点“查看”打开 3D 查看器（gs_editor）
-
-（9）可删除卡片（前端本地移除，若后端提供 `/delete/{job_id}` 则会尝试调用）
+（6）查看日志、下载结果 zip
 
 5. 输出与文件位置
 
